@@ -1,36 +1,68 @@
 # NeeWiFi: Linux WiFi Troubleshooter & Fixer 📡🛠️
 
-**NeeWiFi** is a lightweight, interactive terminal utility designed to diagnose and repair common wireless network issues in Linux (such as Kali Linux, Ubuntu, Debian).
+[![Python Version](https://img.shields.io/badge/python-3.8%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Platform](https://img.shields.io/badge/Platform-Linux-red.svg)]()
+[![Cybersecurity Tool](https://img.shields.io/badge/Cybersecurity-Network--Repair-purple.svg)]()
 
-If your WiFi is soft-blocked by the OS, disabled in software, NetworkManager has frozen, or you can connect to WiFi but cannot browse the web (DNS issues), **NeeWiFi** will automatically detect and fix the problem.
+**NeeWiFi** is a lightweight, interactive terminal utility designed to diagnose and repair common wireless network issues in Linux (specifically Kali Linux, Debian, and Ubuntu). If your wireless card is soft-blocked, network configurations are corrupted, or DNS settings are frozen, NeeWiFi scans your adapters and repairs them in one click.
+
+---
+
+## 📸 Diagnostic Console Preview
+![NeeWiFi Terminal Mockup](./assets/neewifi_dashboard.png)
 
 ---
 
 ## ✨ Features
-- **🔍 Auto-Diagnosis**: Scans your wireless interfaces, NetworkManager state, rfkill blocks, internet ping, and DNS resolution to identify exactly where the connection fails.
-- **⚡ Interactive Repairs**:
-  - **Option 1**: Restart NetworkManager service.
-  - **Option 2**: Software-unblock all wireless devices (`rfkill unblock`).
-  - **Option 3**: Force start wireless adapters (brings up `wlan0` / `wlp`).
-  - **Option 4**: Repair DNS configuration (sets resolv.conf to public servers `8.8.8.8` and `1.1.1.1`).
-  - **Option 5**: Complete Network Reset (combines all repairs in one click).
+- **🔍 Auto-Diagnosis:** Checks wireless interface states, rfkill hardware/software blocks, NetworkManager status, ping, and DNS resolution.
+- **⚡ Interactive Repairs:**
+  - Restart NetworkManager service.
+  - Software-unblock all wireless devices (`rfkill unblock`).
+  - Force start wireless adapters (brings up `wlan0` / `wlp`).
+  - Repair DNS configuration (replaces DNS servers with `8.8.8.8` and `1.1.1.1` in `resolv.conf`).
+  - Complete Network Reset (combines all repairs).
 
 ---
 
-## 🚀 How to Run
+## 🚀 Step-by-Step Setup & Installation Guide
 
-Since network configurations require administrative changes, you **must run the script using sudo/root privileges**:
+Follow these steps to download and run NeeWiFi:
 
+### Step 1: Clone the Repository (Download karein)
+Open your terminal and clone the repository:
 ```bash
-sudo python3 neewifi.py
+git clone https://github.com/Neeshant01/nee-wifi-fixer.git
+cd nee-wifi-fixer
 ```
 
-### Dependencies
-This script uses the `rich` library for rendering the CLI interface. If you run it outside your project's virtual environment, ensure you install it:
+### Step 2: Install UI Modules (Setup dependencies)
+This tool requires the `rich` python module for rendering the diagnostic terminal interface:
 ```bash
 pip install rich
 ```
-*Note: If you get an `externally-managed-environment` error, run the script from within your active Python virtual environment (`venv`) using `sudo ./venv/bin/python neewifi.py`.*
+> [!NOTE]
+> Agar aapko system-wide block (`externally-managed-environment`) error aati hai, toh aap virtual environment setup kar sakte hain:
+> ```bash
+> python3 -m venv venv
+> source venv/bin/activate
+> pip install rich
+> ```
+
+### Step 3: Run with Administrative Privileges (Sudo se chalayein)
+Wireless card diagnosis and network manager repairs require root privileges. Run:
+```bash
+sudo python3 neewifi.py
+```
+*Virtual environment users can run using the virtual venv runtime:*
+```bash
+sudo ./venv/bin/python neewifi.py
+```
+
+---
+
+## 📖 Complete Setup & Debugging Guide
+For detailed configuration steps, network diagnostics, and fixing persistent DNS blocks, open the [SETUP_GUIDE.md](./SETUP_GUIDE.md).
 
 ---
 
