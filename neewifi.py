@@ -18,8 +18,8 @@ BANNER = """
 ██║ ╚████║███████╗███████╗╚███╔███╔╝██║██║     ██║
 ╚═╝  ╚═══╝╚══════╝╚══════╝ ╚══╝╚══╝ ╚═╝╚═╝     ╚═╝
 [/bold purple]
-          [bold cyan]NeeWiFi - Linux WiFi Troubleshooter & Fixer v1.0[/bold cyan]
-            [dim]A simple diagnostic tool to repair Linux WiFi issues[/dim]
+          [bold cyan]NeeWiFi - Advanced Auto-Diagnostic & Repair v2.0[/bold cyan]
+            [dim]A smart interactive troubleshooter for Linux WiFi[/dim]
 """
 
 def is_root():
@@ -36,15 +36,44 @@ def run_cmd(cmd):
     except Exception as e:
         return -1, "", str(e)
 
-def get_wifi_interfaces():
-    """Identify wireless interfaces on the system."""
-    interfaces = []
-    # Check /sys/class/net directory for wireless interfaces
+def get_wifi_details():
+    """Identify wireless interfaces, their MAC addresses, and active drivers."""
+    adapters = []
     if os.path.exists("/sys/class/net"):
         for name in os.listdir("/sys/class/net"):
-            if os.path.exists(f"/sys/class/net/{name}/wireless") or name.startswith("wlan") or name.startswith("wlp"):
-                interfaces.append(name)
-    return interfaces
+            # Identify wireless interfaces
+            is_wireless = os.path.exists(f"/sys/class/net/{name}/wireless") or name.startswith("wlan") or name.startswith("wlp")
+            if is_wireless and name != "lo":
+                mac = "Unknown"
+                driver = "Unknown"
+                state = "DOWN"
+                
+                # Get MAC Address
+                try:
+                    with open(f"/sys/class/net/{name}/address", "r") as f:
+                        mac = f.read().strip()
+                except Exception:
+                    pass
+                
+                # Get Operation State (UP/DOWN)
+                try:
+                    with open(f"/sys/class/net/{name}/operstate", "r") as f:
+                        state = f.read().strip().upper()
+                except Exception:
+                    pass
+
+                # Get Driver Name from symlink
+                driver_path = f"/sys/class/net/{name}/device/driver"
+                if os.path.islink(driver_path):
+                    driver = os.path.basename(os.readlink(driver_path))
+                
+                adapters.append({
+                    "interface": name,
+                    "mac": mac,
+                    "driver": driver,
+                    "state": state
+                })
+    return adapters
 
 def check_internet():
     """Test ping to a public DNS IP (8.8.8.8)."""
@@ -68,177 +97,220 @@ def check_rfkill():
     hard_blocked = "hard: yes" in out.lower()
     return soft_blocked, hard_blocked
 
-def diagnose():
-    """Run diagnostics and return status dict."""
-    interfaces = get_wifi_interfaces()
+def run_diagnostics():
+    """Perform a deep scan and return status reports."""
+    adapters = get_wifi_details()
     internet = check_internet()
     dns = check_dns()
     nm_active = check_network_manager()
-    soft, hard = check_rfkill()
+    soft_block, hard_block = check_rfkill()
     
     return {
-        "interfaces": interfaces,
+        "adapters": adapters,
         "internet": internet,
         "dns": dns,
         "nm_active": nm_active,
-        "soft_blocked": soft,
-        "hard_blocked": hard
+        "soft_blocked": soft_block,
+        "hard_blocked": hard_block
     }
 
-def print_diagnostics(status):
-    """Print the diagnostic report in a beautiful table."""
-    table = Table(title="📡 WiFi Diagnostic Report", border_style="purple")
-    table.add_column("Audit Check", style="bold cyan")
+def print_diagnostics_report(status):
+    """Print the detailed diagnostic table."""
+    table = Table(title="🔍 System Diagnostic Results", border_style="purple")
+    table.add_column("System Check", style="bold cyan")
     table.add_column("Status", justify="center")
-    table.add_column("Details")
+    table.add_column("Identified Issue / Status Details")
     
-    # 1. Root Check
-    root_status = "[green]✔ OK[/green]" if is_root() else "[yellow]⚠ User[/yellow]"
-    root_desc = "Running as root/sudo" if is_root() else "Running without sudo (fixes will be unavailable)"
-    table.add_row("Root Privileges", root_status, root_desc)
+    # Privileges
+    root_status = "[green]✔ Root[/green]" if is_root() else "[yellow]⚠ User[/yellow]"
+    root_desc = "Root permissions verified" if is_root() else "Running without sudo. Repairs will be blocked."
+    table.add_row("Execution Privilege", root_status, root_desc)
     
-    # 2. Interfaces
-    if status["interfaces"]:
-        int_status = "[green]✔ Detected[/green]"
-        int_desc = f"Wireless interfaces: {', '.join(status['interfaces'])}"
+    # Adapters
+    if status["adapters"]:
+        adapt_status = "[green]✔ Detected[/green]"
+        details = ", ".join([f"{a['interface']} ({a['state']})" for a in status["adapters"]])
+        adapt_desc = f"Active interfaces: {details}"
     else:
-        int_status = "[red]✘ Missing[/red]"
-        int_desc = "No wireless adapters detected. Check if plugged in or driver missing."
-    table.add_row("Wireless Cards", int_status, int_desc)
+        adapt_status = "[red]✘ Not Found[/red]"
+        adapt_desc = "No physical wireless adapters detected on the system."
+    table.add_row("Wireless Hardware", adapt_status, adapt_desc)
     
-    # 3. NetworkManager
-    nm_status = "[green]✔ Active[/green]" if status["nm_active"] else "[red]✘ Inactive[/red]"
-    nm_desc = "NetworkManager service is running" if status["nm_active"] else "NetworkManager service is stopped"
-    table.add_row("NetworkManager", nm_status, nm_desc)
+    # Service
+    nm_status = "[green]✔ Running[/green]" if status["nm_active"] else "[red]✘ Stopped[/red]"
+    nm_desc = "NetworkManager service is active" if status["nm_active"] else "NetworkManager service is stopped/disabled"
+    table.add_row("Network Service", nm_status, nm_desc)
     
-    # 4. RFKILL
+    # RF Block
     if status["soft_blocked"]:
         rf_status = "[yellow]⚠ Soft Blocked[/yellow]"
-        rf_desc = "WiFi is disabled in software (can be unblocked)"
+        rf_desc = "WiFi is disabled by software. Needs rfkill unblock."
     elif status["hard_blocked"]:
         rf_status = "[red]✘ Hard Blocked[/red]"
-        rf_desc = "WiFi is disabled via physical hardware switch/hotkey"
+        rf_desc = "WiFi is disabled via hardware switch/button. Toggle switch on laptop."
     else:
         rf_status = "[green]✔ Unblocked[/green]"
-        rf_desc = "No hardware or software locks detected"
-    table.add_row("rfkill Block Status", rf_status, rf_desc)
+        rf_desc = "No software/hardware locks detected."
+    table.add_row("RF Block Status", rf_status, rf_desc)
     
-    # 5. Connection
+    # Internet
     if status["internet"]:
-        conn_status = "[green]✔ Connected[/green]"
-        conn_desc = "Successfully pinged public IP (8.8.8.8)"
+        net_status = "[green]✔ Online[/green]"
+        net_desc = "Connection to 8.8.8.8 successful."
     else:
-        conn_status = "[red]✘ Offline[/red]"
-        conn_desc = "Cannot reach internet (Ping 8.8.8.8 failed)"
-    table.add_row("Internet Connection", conn_status, conn_desc)
+        net_status = "[red]✘ Offline[/red]"
+        net_desc = "Cannot ping public IPs. Connection down."
+    table.add_row("Internet Link", net_status, net_desc)
     
-    # 6. DNS
+    # DNS
     if status["dns"]:
-        dns_status = "[green]✔ Resolved[/green]"
-        dns_desc = "DNS resolution is working (Ping google.com OK)"
+        dns_status = "[green]✔ OK[/green]"
+        dns_desc = "Nameserver resolution is functional."
     else:
-        dns_status = "[red]✘ Resolv Error[/red]"
-        dns_desc = "DNS lookup failed (Cannot resolve domain names)"
-    table.add_row("DNS Lookup", dns_status, dns_desc)
+        dns_status = "[red]✘ Failed[/red]"
+        dns_desc = "Cannot resolve domain names (Connected but no internet)."
+    table.add_row("DNS Resolution", dns_status, dns_desc)
     
     console.print(table)
 
-def apply_fix(option, status):
-    """Apply specific networking fix."""
+def show_hardware_details(adapters):
+    """Print details about physical wireless adapters (equivalent to image metadata details)."""
+    if not adapters:
+        console.print("[bold red]No wireless adapters found to display details.[/bold red]")
+        return
+        
+    for index, a in enumerate(adapters):
+        table = Table(title=f"📡 Wireless Adapter Metadata [#{index+1}]", border_style="cyan")
+        table.add_column("Property", style="bold yellow")
+        table.add_column("Value Details")
+        
+        table.add_row("Interface Name", a["interface"])
+        table.add_row("MAC Address (Physical)", a["mac"])
+        table.add_row("Kernel Driver In Use", a["driver"])
+        table.add_row("Operational State", a["state"])
+        table.add_row("Device File Path", f"/sys/class/net/{a['interface']}")
+        
+        console.print(table)
+
+def apply_auto_repair(status):
+    """Analyze diagnostics and automatically apply fixes in sequence."""
     if not is_root():
-        console.print("[bold red]Error:[/bold red] You must run NeeWiFi with sudo to apply fixes (e.g. [bold]sudo python3 neewifi.py[/bold]).")
-        return False
+        console.print("[bold red]Error:[/bold red] Sudo/Root permissions required to run repair actions.")
+        return
         
-    if option == "1":
-        console.print("[yellow]Restarting NetworkManager service...[/yellow]")
-        run_cmd("systemctl restart NetworkManager")
-        time.sleep(2)
-        return True
-        
-    elif option == "2":
-        console.print("[yellow]Unblocking all wireless devices (rfkill)...[/yellow]")
+    console.print(Panel("[bold yellow]🔧 Initiating Auto-Repair Sequence[/bold yellow]", border_style="yellow"))
+    
+    repaired = False
+    
+    # 1. Fix Soft Blocks
+    if status["soft_blocked"]:
+        console.print("[yellow][*] Soft block detected. Running 'rfkill unblock all'...[/yellow]")
         run_cmd("rfkill unblock all")
         time.sleep(1)
-        return True
+        repaired = True
         
-    elif option == "3":
-        if not status["interfaces"]:
-            console.print("[red]No wireless interfaces found to bring up.[/red]")
-            return False
-        for name in status["interfaces"]:
-            console.print(f"[yellow]Bringing up interface '{name}'...[/yellow]")
-            run_cmd(f"ip link set {name} up")
-        time.sleep(1)
-        return True
-        
-    elif option == "4":
-        console.print("[yellow]Repairing DNS Resolver Configuration (/etc/resolv.conf)...[/yellow]")
+    # 2. Fix NetworkManager service
+    if not status["nm_active"]:
+        console.print("[yellow][*] NetworkManager is inactive. Running 'systemctl restart NetworkManager'...[/yellow]")
+        run_cmd("systemctl restart NetworkManager")
+        time.sleep(2)
+        repaired = True
+
+    # 3. Bring interfaces UP
+    for a in status["adapters"]:
+        if a["state"] != "UP":
+            console.print(f"[yellow][*] Interface '{a['interface']}' is down. Bringing it UP...[/yellow]")
+            run_cmd(f"ip link set {a['interface']} up")
+            time.sleep(1)
+            repaired = True
+
+    # 4. Fix DNS if connected but no domain lookup
+    if status["internet"] and not status["dns"]:
+        console.print("[yellow][*] DNS failure detected. Setting nameservers to 8.8.8.8 and 1.1.1.1...[/yellow]")
         try:
-            # Backup old resolv.conf
-            if os.path.exists("/etc/resolv.conf"):
-                run_cmd("cp /etc/resolv.conf /etc/resolv.conf.backup")
-            # Write Google and Cloudflare public DNS
             with open("/etc/resolv.conf", "w") as f:
                 f.write("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
-            console.print("[green]✔ DNS servers set to 8.8.8.8 and 1.1.1.1 successfully.[/green]")
-            return True
+            console.print("[green]✔ DNS settings updated.[/green]")
+            repaired = True
         except Exception as e:
-            console.print(f"[red]Failed to modify resolv.conf: {str(e)}[/red]")
-            return False
-            
-    elif option == "5":
-        console.print("[yellow]Performing complete Network Stack Reset...[/yellow]")
-        run_cmd("rfkill unblock all")
+            console.print(f"[red]Failed to fix DNS: {str(e)}[/red]")
+
+    # 5. Generic Reset if completely offline
+    if not status["internet"] and not repaired:
+        console.print("[yellow][*] System is offline with no obvious software blocks. Restarting whole network stack...[/yellow]")
         run_cmd("systemctl restart NetworkManager")
         time.sleep(2)
-        if status["interfaces"]:
-            for name in status["interfaces"]:
-                run_cmd(f"ip link set {name} up")
-        return True
-    
-    return False
+        repaired = True
+
+    if repaired:
+        console.print("[bold green]✔ Auto-repair completed. Verifying connection status...[/bold green]")
+        time.sleep(1)
+    else:
+        console.print("[green]✔ No auto-repair needed. No software blocks or connection issues found.[/green]")
 
 def main():
-    console.print(BANNER)
-    
+    if not is_root():
+        console.print(BANNER)
+        console.print("[bold red]⚠ Access Denied:[/bold red] You must run NeeWiFi with sudo (e.g. [bold]sudo python3 neewifi.py[/bold]) to audit and fix WiFi interfaces.")
+        sys.exit(1)
+
     while True:
-        status = diagnose()
-        print_diagnostics(status)
+        console.clear()
+        console.print(BANNER)
         
-        # Show interactive fix menu
-        menu = Table(title="🛠️ NeeWiFi Repair Actions", border_style="purple", box=None)
+        # 1. Deep Scan Diagnostics
+        status = run_diagnostics()
+        print_diagnostics_report(status)
+        
+        # 2. Interactive TUI Menu
+        menu = Table(title="⚡ NeeWiFi Control Panel ⚡", border_style="purple", box=None)
         menu.add_column("Option", style="bold magenta", justify="center")
         menu.add_column("Action description", style="bold white")
         
-        menu.add_row("1", "Restart NetworkManager (Fixes connection freezes)")
-        menu.add_row("2", "Unblock WiFi (Fixes soft-blocked / disabled WiFi)")
-        menu.add_row("3", "Enable wireless adapters (Brings up wlan0 interfaces)")
-        menu.add_row("4", "Reset DNS settings (Fixes 'Connected but no internet' issues)")
-        menu.add_row("5", "Complete Network Reset (Runs all repairs in sequence)")
-        menu.add_row("6", "Run Diagnostics Again")
-        menu.add_row("7", "Exit")
+        menu.add_row("1", "🔧 Deep Scan & Auto-Repair (स्कैन करके अपने आप ठीक करें)")
+        menu.add_row("2", "📡 View Wireless Card & Driver details (मेटाडेटा देखें)")
+        menu.add_row("3", "🔄 Restart NetworkManager (कनेक्शन अटकने पर चलाएं)")
+        menu.add_row("4", "🔓 Unblock wireless devices (rfkill unblock)")
+        menu.add_row("5", "🌐 Reset DNS Config (Connected but no internet fix)")
+        menu.add_row("6", "🔍 Run Diagnostics scan again")
+        menu.add_row("7", "❌ Exit Troubleshooter")
         
         console.print(Panel(menu, border_style="purple"))
         
-        choice = console.input("[bold yellow]Choose an option to repair/diagnose (1-7): [/bold yellow]").strip()
+        choice = console.input("[bold yellow]Enter your choice (1-7): [/bold yellow]").strip()
         
-        if choice in ["1", "2", "3", "4", "5"]:
-            success = apply_fix(choice, status)
-            if success:
-                console.print("[green]✔ Fix applied. Running diagnostics again...[/green]")
-                time.sleep(1.5)
-            else:
-                console.print("[red]❌ Could not apply fix. Check permissions or logs.[/red]")
-                console.input("\nPress Enter to continue...")
-        elif choice == "6":
-            console.print("[yellow]Running diagnostic checks...[/yellow]")
+        if choice == "1":
+            apply_auto_repair(status)
+        elif choice == "2":
+            show_hardware_details(status["adapters"])
+        elif choice == "3":
+            console.print("[yellow]Restarting NetworkManager service...[/yellow]")
+            run_cmd("systemctl restart NetworkManager")
+            time.sleep(2)
+        elif choice == "4":
+            console.print("[yellow]Unblocking all wireless interfaces...[/yellow]")
+            run_cmd("rfkill unblock all")
             time.sleep(1)
+        elif choice == "5":
+            console.print("[yellow]Updating DNS nameservers...[/yellow]")
+            try:
+                with open("/etc/resolv.conf", "w") as f:
+                    f.write("nameserver 8.8.8.8\nnameserver 1.1.1.1\n")
+                console.print("[green]✔ DNS updated successfully.[/green]")
+            except Exception as e:
+                console.print(f"[red]Error: {str(e)}[/red]")
+        elif choice == "6":
+            console.print("[yellow]Refreshing diagnostics...[/yellow]")
+            time.sleep(0.5)
         elif choice == "7":
-            console.print("[green]Exiting NeeWiFi. Have a nice day![/green]")
+            console.print("[green]Exiting NeeWiFi. Stay connected![/green]")
             sys.exit(0)
         else:
-            console.print("[bold red]Invalid option. Choose between 1 and 7.[/bold red]")
+            console.print("[bold red]Invalid choice. Choose between 1 and 7.[/bold red]")
             time.sleep(1.5)
+            
+        console.input("\n[dim]Press Enter to continue...[/dim]")
 
 if __name__ == "__main__":
     main()
+Px
