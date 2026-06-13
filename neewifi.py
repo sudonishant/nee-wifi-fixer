@@ -3,9 +3,12 @@ import sys
 import os
 import subprocess
 import time
+import re
+import urllib.request
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 console = Console()
 
@@ -18,7 +21,7 @@ BANNER = """
 ██║ ╚████║███████╗███████╗╚███╔███╔╝██║██║     ██║
 ╚═╝  ╚═══╝╚══════╝╚══════╝ ╚══╝╚══╝ ╚═╝╚═╝     ╚═╝
 [/bold purple]
-          [bold cyan]NeeWiFi - Advanced Auto-Diagnostic & Repair v2.0[/bold cyan]
+          [bold cyan]NeeWiFi - Advanced Auto-Diagnostic & Repair v3.0[/bold cyan]
             [dim]A smart interactive troubleshooter for Linux WiFi[/dim]
 """
 
@@ -29,7 +32,7 @@ def is_root():
 def run_cmd(cmd):
     """Run a shell command and return its output, code, and error."""
     try:
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=5)
+        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=8)
         return res.returncode, res.stdout.strip(), res.stderr.strip()
     except subprocess.TimeoutExpired:
         return -1, "", "Command timed out"
@@ -41,28 +44,24 @@ def get_wifi_details():
     adapters = []
     if os.path.exists("/sys/class/net"):
         for name in os.listdir("/sys/class/net"):
-            # Identify wireless interfaces
             is_wireless = os.path.exists(f"/sys/class/net/{name}/wireless") or name.startswith("wlan") or name.startswith("wlp")
             if is_wireless and name != "lo":
                 mac = "Unknown"
                 driver = "Unknown"
                 state = "DOWN"
                 
-                # Get MAC Address
                 try:
                     with open(f"/sys/class/net/{name}/address", "r") as f:
                         mac = f.read().strip()
                 except Exception:
                     pass
                 
-                # Get Operation State (UP/DOWN)
                 try:
                     with open(f"/sys/class/net/{name}/operstate", "r") as f:
                         state = f.read().strip().upper()
                 except Exception:
                     pass
 
-                # Get Driver Name from symlink
                 driver_path = f"/sys/class/net/{name}/device/driver"
                 if os.path.islink(driver_path):
                     driver = os.path.basename(os.readlink(driver_path))
@@ -97,6 +96,23 @@ def check_rfkill():
     hard_blocked = "hard: yes" in out.lower()
     return soft_blocked, hard_blocked
 
+def get_gateway_ip():
+    """Find default router gateway IP using ip route command."""
+    code, out, _ = run_cmd("ip route show | grep default")
+    if code == 0 and out:
+        # Match "default via 192.168.1.1"
+        match = re.search(r"default via ([\d\.]+)", out)
+        if match:
+            return match.group(1)
+    return None
+
+def check_gateway_ping(gateway_ip):
+    """Ping default gateway to verify local connectivity."""
+    if not gateway_ip:
+        return False
+    code, _, _ = run_cmd(f"ping -c 1 -W 2 {gateway_ip}")
+    return code == 0
+
 def run_diagnostics():
     """Perform a deep scan and return status reports."""
     adapters = get_wifi_details()
@@ -104,6 +120,8 @@ def run_diagnostics():
     dns = check_dns()
     nm_active = check_network_manager()
     soft_block, hard_block = check_rfkill()
+    gateway_ip = get_gateway_ip()
+    gateway_ping = check_gateway_ping(gateway_ip)
     
     return {
         "adapters": adapters,
@@ -111,7 +129,9 @@ def run_diagnostics():
         "dns": dns,
         "nm_active": nm_active,
         "soft_blocked": soft_block,
-        "hard_blocked": hard_block
+        "hard_blocked": hard_block,
+        "gateway_ip": gateway_ip,
+        "gateway_ping": gateway_ping
     }
 
 def print_diagnostics_report(status):
@@ -153,6 +173,15 @@ def print_diagnostics_report(status):
         rf_desc = "No software/hardware locks detected."
     table.add_row("RF Block Status", rf_status, rf_desc)
     
+    # Router Gateway
+    if status["gateway_ip"]:
+        gw_status = "[green]✔ Ping OK[/green]" if status["gateway_ping"] else "[red]✘ Ping Fail[/red]"
+        gw_desc = f"Router gateway: {status['gateway_ip']} (Ping: {'Success' if status['gateway_ping'] else 'Failed'})"
+    else:
+        gw_status = "[red]✘ Missing[/red]"
+        gw_desc = "Could not find default gateway. DHCP address may be unassigned."
+    table.add_row("Local Router Connection", gw_status, gw_desc)
+
     # Internet
     if status["internet"]:
         net_status = "[green]✔ Online[/green]"
@@ -174,7 +203,7 @@ def print_diagnostics_report(status):
     console.print(table)
 
 def show_hardware_details(adapters):
-    """Print details about physical wireless adapters (equivalent to image metadata details)."""
+    """Print details about physical wireless adapters."""
     if not adapters:
         console.print("[bold red]No wireless adapters found to display details.[/bold red]")
         return
@@ -192,6 +221,112 @@ def show_hardware_details(adapters):
         
         console.print(table)
 
+def scan_wifi_networks():
+    """Scan and list nearby WiFi networks using nmcli (standard on Kali)."""
+    with console.status("[bold cyan]Scanning for nearby WiFi networks...", spinner="dots"):
+        # Format: SSID,BSSID,SIGNAL,CHAN,SECURITY
+        # Using a custom delimiter to handle spaces in SSIDs safely
+        code, out, err = run_cmd("nmcli -t -f SSID,BSSID,SIGNAL,CHAN,SECURITY device wifi list")
+    
+    if code != 0 or not out:
+        console.print("[bold red]Scan failed:[/bold red] Make sure NetworkManager is running and WiFi is unblocked.")
+        return []
+
+    networks = []
+    # Parse lines
+    for line in out.splitlines():
+        # nmcli -t uses backslash escaping for colons in fields. We can split carefully.
+        # Format is colon separated: SSID:BSSID:SIGNAL:CHAN:SECURITY
+        parts = line.split(":")
+        if len(parts) >= 5:
+            # Reconstruct SSID if it contained colons
+            ssid = ":".join(parts[:-4]).replace("\\:", ":")
+            bssid = parts[-4].replace("\\:", ":")
+            signal = parts[-3]
+            channel = parts[-2]
+            security = parts[-1]
+            
+            networks.append({
+                "ssid": ssid if ssid else "[Hidden Network]",
+                "bssid": bssid,
+                "signal": signal,
+                "channel": channel,
+                "security": security
+            })
+
+    # Display networks
+    table = Table(title="📶 Nearby WiFi Networks", border_style="cyan")
+    table.add_column("SSID (Network Name)", style="bold white")
+    table.add_column("Signal Strength", justify="center")
+    table.add_column("Channel", justify="center")
+    table.add_column("Security", justify="left")
+    table.add_column("BSSID (Router MAC)", style="dim")
+
+    channels_count = {}
+    for n in networks[:15]:  # Limit to top 15
+        # Draw signal bar
+        sig = int(n["signal"])
+        if sig >= 80:
+            sig_str = f"[green]{sig}% █▄▄■[/green]"
+        elif sig >= 50:
+            sig_str = f"[yellow]{sig}% █▄■ [/yellow]"
+        else:
+            sig_str = f"[red]{sig}% █■  [/red]"
+            
+        table.add_row(n["ssid"], sig_str, n["channel"], n["security"], n["bssid"])
+        
+        # Track channel congestion
+        chan = n["channel"]
+        channels_count[chan] = channels_count.get(chan, 0) + 1
+
+    console.print(table)
+
+    # Recommending Best Channel (1, 6, or 11 for 2.4GHz)
+    console.print("\n[bold purple]📊 WiFi Channel Congestion Analysis:[/bold purple]")
+    non_overlapping = ["1", "6", "11"]
+    min_count = 999
+    best_channel = "1"
+    
+    for c in non_overlapping:
+        count = channels_count.get(c, 0)
+        console.print(f" * Channel [bold]{c}[/bold]: Used by [bold]{count}[/bold] nearby networks.")
+        if count < min_count:
+            min_count = count
+            best_channel = c
+            
+    console.print(f"\n💡 [bold green]RECOMMENDATION:[/bold green] Set your router to [bold green]Channel {best_channel}[/bold green] for least congestion and maximum speed.")
+    return networks
+
+def view_system_logs():
+    """Scan kernel logs (dmesg) for wifi/firmware errors."""
+    console.print("\n[bold purple]📋 Scanning Kernel Logs (dmesg) for WiFi Errors...[/bold purple]")
+    code, out, _ = run_cmd("dmesg | grep -i -E 'wlan|wifi|iwl|firmware' | tail -n 12")
+    if code == 0 and out:
+        console.print(Panel(out, title="dmesg WiFi Log Entries", border_style="yellow"))
+    else:
+        console.print("[green]✔ No specific wireless firmware error logs found.[/green]")
+
+def run_speedtest():
+    """Run a clean, built-in download speed test (No dependency needed)."""
+    # Using Cloudflare CDN 1MB download test
+    url = "https://speed.cloudflare.com/__down?bytes=1000000"
+    console.print("\n[bold purple]⚡ Running Built-in Internet Speed Test (1MB Download)...[/bold purple]")
+    
+    try:
+        start_time = time.time()
+        with urllib.request.urlopen(url, timeout=10) as response:
+            data = response.read()
+        end_time = time.time()
+        
+        elapsed = end_time - start_time
+        size_bits = len(data) * 8
+        # Speed in Megabits per second
+        mbps = (size_bits / 1000000) / elapsed
+
+        console.print(Panel(f"[bold green]✔ Speed Test Completed![/bold green]\n\n[bold]Download Speed:[/bold] [underline cyan]{round(mbps, 2)} Mbps[/underline cyan]\n[bold]Transfer time:[/bold] {round(elapsed, 2)} seconds", border_style="green"))
+    except Exception as e:
+        console.print(f"[bold red]Speed test failed:[/bold red] Check internet connection: {str(e)}")
+
 def apply_auto_repair(status):
     """Analyze diagnostics and automatically apply fixes in sequence."""
     if not is_root():
@@ -199,24 +334,20 @@ def apply_auto_repair(status):
         return
         
     console.print(Panel("[bold yellow]🔧 Initiating Auto-Repair Sequence[/bold yellow]", border_style="yellow"))
-    
     repaired = False
     
-    # 1. Fix Soft Blocks
     if status["soft_blocked"]:
         console.print("[yellow][*] Soft block detected. Running 'rfkill unblock all'...[/yellow]")
         run_cmd("rfkill unblock all")
         time.sleep(1)
         repaired = True
         
-    # 2. Fix NetworkManager service
     if not status["nm_active"]:
         console.print("[yellow][*] NetworkManager is inactive. Running 'systemctl restart NetworkManager'...[/yellow]")
         run_cmd("systemctl restart NetworkManager")
         time.sleep(2)
         repaired = True
 
-    # 3. Bring interfaces UP
     for a in status["adapters"]:
         if a["state"] != "UP":
             console.print(f"[yellow][*] Interface '{a['interface']}' is down. Bringing it UP...[/yellow]")
@@ -224,7 +355,6 @@ def apply_auto_repair(status):
             time.sleep(1)
             repaired = True
 
-    # 4. Fix DNS if connected but no domain lookup
     if status["internet"] and not status["dns"]:
         console.print("[yellow][*] DNS failure detected. Setting nameservers to 8.8.8.8 and 1.1.1.1...[/yellow]")
         try:
@@ -235,9 +365,8 @@ def apply_auto_repair(status):
         except Exception as e:
             console.print(f"[red]Failed to fix DNS: {str(e)}[/red]")
 
-    # 5. Generic Reset if completely offline
     if not status["internet"] and not repaired:
-        console.print("[yellow][*] System is offline with no obvious software blocks. Restarting whole network stack...[/yellow]")
+        console.print("[yellow][*] System is offline. Restarting whole network stack...[/yellow]")
         run_cmd("systemctl restart NetworkManager")
         time.sleep(2)
         repaired = True
@@ -268,30 +397,38 @@ def main():
         menu.add_column("Action description", style="bold white")
         
         menu.add_row("1", "🔧 Deep Scan & Auto-Repair (स्कैन करके अपने आप ठीक करें)")
-        menu.add_row("2", "📡 View Wireless Card & Driver details (मेटाडेटा देखें)")
-        menu.add_row("3", "🔄 Restart NetworkManager (कनेक्शन अटकने पर चलाएं)")
-        menu.add_row("4", "🔓 Unblock wireless devices (rfkill unblock)")
-        menu.add_row("5", "🌐 Reset DNS Config (Connected but no internet fix)")
-        menu.add_row("6", "🔍 Run Diagnostics scan again")
-        menu.add_row("7", "❌ Exit Troubleshooter")
+        menu.add_row("2", "📶 Scan Nearby WiFi Networks (आसपास के वाईफाई सिग्नल्स खोजें)")
+        menu.add_row("3", "⚡ Run Internet Download Speed Test (स्पीड जाँचे)")
+        menu.add_row("4", "📋 Scan Kernel Driver logs (फर्मवेयर/लॉग्स त्रुटि खोजें)")
+        menu.add_row("5", "📡 View Wireless Card metadata details (अडेप्टर विवरण)")
+        menu.add_row("6", "🔄 Restart NetworkManager Service (नेटवर्क रिस्टार्ट)")
+        menu.add_row("7", "🔓 Unblock all wireless adapters (rfkill unblock)")
+        menu.add_row("8", "🌐 Reset DNS configurations (nameserver 8.8.8.8)")
+        menu.add_row("9", "❌ Exit Troubleshooter")
         
         console.print(Panel(menu, border_style="purple"))
         
-        choice = console.input("[bold yellow]Enter your choice (1-7): [/bold yellow]").strip()
+        choice = console.input("[bold yellow]Enter your choice (1-9): [/bold yellow]").strip()
         
         if choice == "1":
             apply_auto_repair(status)
         elif choice == "2":
-            show_hardware_details(status["adapters"])
+            scan_wifi_networks()
         elif choice == "3":
+            run_speedtest()
+        elif choice == "4":
+            view_system_logs()
+        elif choice == "5":
+            show_hardware_details(status["adapters"])
+        elif choice == "6":
             console.print("[yellow]Restarting NetworkManager service...[/yellow]")
             run_cmd("systemctl restart NetworkManager")
             time.sleep(2)
-        elif choice == "4":
+        elif choice == "7":
             console.print("[yellow]Unblocking all wireless interfaces...[/yellow]")
             run_cmd("rfkill unblock all")
             time.sleep(1)
-        elif choice == "5":
+        elif choice == "8":
             console.print("[yellow]Updating DNS nameservers...[/yellow]")
             try:
                 with open("/etc/resolv.conf", "w") as f:
@@ -299,18 +436,14 @@ def main():
                 console.print("[green]✔ DNS updated successfully.[/green]")
             except Exception as e:
                 console.print(f"[red]Error: {str(e)}[/red]")
-        elif choice == "6":
-            console.print("[yellow]Refreshing diagnostics...[/yellow]")
-            time.sleep(0.5)
-        elif choice == "7":
+        elif choice == "9":
             console.print("[green]Exiting NeeWiFi. Stay connected![/green]")
             sys.exit(0)
         else:
-            console.print("[bold red]Invalid choice. Choose between 1 and 7.[/bold red]")
+            console.print("[bold red]Invalid choice. Choose between 1 and 9.[/bold red]")
             time.sleep(1.5)
             
         console.input("\n[dim]Press Enter to continue...[/dim]")
 
 if __name__ == "__main__":
     main()
-Px
