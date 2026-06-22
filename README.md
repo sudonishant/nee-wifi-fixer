@@ -66,5 +66,22 @@ For detailed configuration steps, network diagnostics, and fixing persistent DNS
 
 ---
 
+## 🔧 Common Troubleshooting & Fixes
+
+### 1. `PermissionError: [Errno 1] Operation not permitted`
+Many commands (such as `rfkill` or modifying `resolv.conf`) require administrative privileges. Always run the script with `sudo`:
+```bash
+sudo python3 neewifi.py
+```
+
+### 2. `ModuleNotFoundError: No module named 'rich'`
+Ensure you have installed the `rich` library inside the active Python environment:
+```bash
+pip install rich
+```
+If using a virtual environment, verify that you activated it (`source venv/bin/activate`) before launching the script.
+
+---
+
 ## 📄 License
 Distributed under the MIT License.
