@@ -4,6 +4,7 @@ import os
 import subprocess
 import time
 import re
+from typing import Sequence
 import urllib.request
 from rich.console import Console
 from rich.panel import Panel
@@ -29,10 +30,10 @@ def is_root():
     """Check if the script is run with sudo/root privileges."""
     return os.geteuid() == 0
 
-def run_cmd(cmd):
-    """Run a shell command and return its output, code, and error."""
+def run_cmd(args: Sequence[str]):
+    """Run a command without a shell and return its output, code, and error."""
     try:
-        res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=8)
+        res = subprocess.run(args, shell=False, capture_output=True, text=True, timeout=8)
         return res.returncode, res.stdout.strip(), res.stderr.strip()
     except subprocess.TimeoutExpired:
         return -1, "", "Command timed out"
@@ -76,30 +77,30 @@ def get_wifi_details():
 
 def check_internet():
     """Test ping to a public DNS IP (8.8.8.8)."""
-    code, _, _ = run_cmd("ping -c 1 -W 2 8.8.8.8")
+    code, _, _ = run_cmd(["ping", "-c", "1", "-W", "2", "8.8.8.8"])
     return code == 0
 
 def check_dns():
     """Test DNS resolution (pinging google.com)."""
-    code, _, _ = run_cmd("ping -c 1 -W 2 google.com")
+    code, _, _ = run_cmd(["ping", "-c", "1", "-W", "2", "google.com"])
     return code == 0
 
 def check_network_manager():
     """Check NetworkManager service status."""
-    code, out, _ = run_cmd("systemctl is-active NetworkManager")
+    code, out, _ = run_cmd(["systemctl", "is-active", "NetworkManager"])
     return out == "active"
 
 def check_rfkill():
     """Check if WiFi is soft or hard blocked by rfkill."""
-    code, out, _ = run_cmd("rfkill list wifi")
+    code, out, _ = run_cmd(["rfkill", "list", "wifi"])
     soft_blocked = "soft: yes" in out.lower()
     hard_blocked = "hard: yes" in out.lower()
     return soft_blocked, hard_blocked
 
 def get_gateway_ip():
     """Find default router gateway IP using ip route command."""
-    code, out, _ = run_cmd("ip route show | grep default")
-    if code == 0 and out:
+    _, out, _ = run_cmd(["ip", "route", "show"])
+    if out:
         # Match "default via 192.168.1.1"
         match = re.search(r"default via ([\d\.]+)", out)
         if match:
@@ -110,7 +111,7 @@ def check_gateway_ping(gateway_ip):
     """Ping default gateway to verify local connectivity."""
     if not gateway_ip:
         return False
-    code, _, _ = run_cmd(f"ping -c 1 -W 2 {gateway_ip}")
+    code, _, _ = run_cmd(["ping", "-c", "1", "-W", "2", gateway_ip])
     return code == 0
 
 def run_diagnostics():
@@ -226,7 +227,9 @@ def scan_wifi_networks():
     with console.status("[bold cyan]Scanning for nearby WiFi networks...", spinner="dots"):
         # Format: SSID,BSSID,SIGNAL,CHAN,SECURITY
         # Using a custom delimiter to handle spaces in SSIDs safely
-        code, out, err = run_cmd("nmcli -t -f SSID,BSSID,SIGNAL,CHAN,SECURITY device wifi list")
+        code, out, err = run_cmd([
+            "nmcli", "-t", "-f", "SSID,BSSID,SIGNAL,CHAN,SECURITY", "device", "wifi", "list"
+        ])
     
     if code != 0 or not out:
         console.print("[bold red]Scan failed:[/bold red] Make sure NetworkManager is running and WiFi is unblocked.")
@@ -300,9 +303,13 @@ def scan_wifi_networks():
 def view_system_logs():
     """Scan kernel logs (dmesg) for wifi/firmware errors."""
     console.print("\n[bold purple]📋 Scanning Kernel Logs (dmesg) for WiFi Errors...[/bold purple]")
-    code, out, _ = run_cmd("dmesg | grep -i -E 'wlan|wifi|iwl|firmware' | tail -n 12")
-    if code == 0 and out:
-        console.print(Panel(out, title="dmesg WiFi Log Entries", border_style="yellow"))
+    _, out, _ = run_cmd(["dmesg"])
+    matching_lines = [
+        line for line in out.splitlines()
+        if re.search(r"wlan|wifi|iwl|firmware", line, re.IGNORECASE)
+    ]
+    if matching_lines:
+        console.print(Panel("\n".join(matching_lines[-12:]), title="dmesg WiFi Log Entries", border_style="yellow"))
     else:
         console.print("[green]✔ No specific wireless firmware error logs found.[/green]")
 
@@ -338,20 +345,20 @@ def apply_auto_repair(status):
     
     if status["soft_blocked"]:
         console.print("[yellow][*] Soft block detected. Running 'rfkill unblock all'...[/yellow]")
-        run_cmd("rfkill unblock all")
+        run_cmd(["rfkill", "unblock", "all"])
         time.sleep(1)
         repaired = True
         
     if not status["nm_active"]:
         console.print("[yellow][*] NetworkManager is inactive. Running 'systemctl restart NetworkManager'...[/yellow]")
-        run_cmd("systemctl restart NetworkManager")
+        run_cmd(["systemctl", "restart", "NetworkManager"])
         time.sleep(2)
         repaired = True
 
     for a in status["adapters"]:
         if a["state"] != "UP":
             console.print(f"[yellow][*] Interface '{a['interface']}' is down. Bringing it UP...[/yellow]")
-            run_cmd(f"ip link set {a['interface']} up")
+            run_cmd(["ip", "link", "set", a["interface"], "up"])
             time.sleep(1)
             repaired = True
 
@@ -367,7 +374,7 @@ def apply_auto_repair(status):
 
     if not status["internet"] and not repaired:
         console.print("[yellow][*] System is offline. Restarting whole network stack...[/yellow]")
-        run_cmd("systemctl restart NetworkManager")
+        run_cmd(["systemctl", "restart", "NetworkManager"])
         time.sleep(2)
         repaired = True
 
@@ -422,11 +429,11 @@ def main():
             show_hardware_details(status["adapters"])
         elif choice == "6":
             console.print("[yellow]Restarting NetworkManager service...[/yellow]")
-            run_cmd("systemctl restart NetworkManager")
+            run_cmd(["systemctl", "restart", "NetworkManager"])
             time.sleep(2)
         elif choice == "7":
             console.print("[yellow]Unblocking all wireless interfaces...[/yellow]")
-            run_cmd("rfkill unblock all")
+            run_cmd(["rfkill", "unblock", "all"])
             time.sleep(1)
         elif choice == "8":
             console.print("[yellow]Updating DNS nameservers...[/yellow]")
